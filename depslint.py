@@ -21,11 +21,25 @@ import sys
 import cPickle as pickle
 from collections import defaultdict
 
+_DEPSLINT_CFG = '.depslint'
 _DEFAULT_TRACEFILE = 'deps.lst'
 _DEFAULT_MANIFEST = 'build.ninja'
 
-_IGNORED_PREFIXES = []
-_IGNORED_SUFFICES = ['.d', '.lock', '.pyc', '.rsp']
+# Matching targets are silently dropped when loading trace file, as if these
+# were never accessed.
+global _IGNORED_SUFFICES
+_IGNORED_SUFFICES = ['.d', '.pyc', '.rsp']
+
+# Implicit dependencies list. Stores pairs of regexeps matching a
+# target and its implicit dependencies, and used to discard false/irrelevant
+# alarms regrading missing dependencies detected by the tool.
+#
+# For example, you may have a tool (e.g., calc_crc.sh) in the build tree
+# invoked for each target built. It will be considered a dependency by deplint,
+# but you couldn't care less. Adding ("", r"calc_crc\.sh") to the list
+# will suppress the errors.
+global _IMPLICIT_DEPS_MATCHERS
+_IMPLICIT_DEPS_MATCHERS = []
 
 global _verbose
 _verbose = 0
@@ -42,6 +56,10 @@ def V3(*strings):
     if _verbose >= 3:
         print " ".join(strings)
 
+def fatal(msg, ret=-1):
+    print >>sys.stderr, "\033[1;33mWARNING: %s\033[0m" % msg
+    sys.exit(ret)
+
 def warn(msg):
     if _verbose < 0:
         return
@@ -57,44 +75,8 @@ def debug(msg):
         return
     print "\033[1;34mINFO: %s\033[0m" % msg
 
-#TBD: is needed?
 def is_ignored(target):
-    return any(target.startswith(prefix) for prefix in _IGNORED_PREFIXES) or \
-           any(target.endswith(suffix) for suffix in _IGNORED_SUFFICES)
-
-# Implicit dependencies list. Stores pairs of regexeps matching a
-# target and its implicit dependencies, useful to discard false/irrelevant
-# alarms regrading missing dependencies detected by the tool.
-_IMPLICIT_DEPS_MATCHERS = [
-    (re.compile(r""), # 'Immutable dependencies list' TODO: narrow this down?
-     re.compile(r"utils/build/xmake/lib/xmake/.*\.py|"
-                "common/pypackages/xiv/.*\.py|"
-                "common/pypackages/elementtree.py|"
-                "common/python/nextra/.*\.py|"
-                "system/elf_x86_64.x|"
-                "common/conf/gen/conf_validate_xml.py|"
-                "utils/build/common.py|"
-                "utils/build/scripts/(pyrexc|tar).deterministic.*|"
-                "utils/administrator/(admin_util.py|admin_acl.py)|"
-                "utils/misc/(code_exceptions.py|call_tree.py)|"
-                "utils/Xylophage/Xylowrap|" # FIX XMAKE
-                "common/journal/gen/journal_filenames.py|" # FIX XMAKE
-                "common/spec/tools/elementtree.py|" # FIX XMAKE
-                "common/pypackages/xiv/osutils/vexec_helper.so" # FIX XMAKE - tool dep?
-                )),
-    (re.compile(r".*\.ko$"), re.compile(r".*\.h$")), # FIX XMAKE. Missing deps on headers in kernel modules.
-    (re.compile(r"utils/mcelog/mcelog"), re.compile(r"utils/mcelog/sandy-bridge\.[hc]")), # FIX XMAKE
-    (re.compile(r"utils/cmdline/iperf/iperf"), re.compile(r"utils/cmdline/iperf/.*")), # FIX XMAKE
-    (re.compile(r"utils/cmdline/netcat/netcat"), re.compile(r"utils/cmdline/netcat/.*")), # FIX XMAKE
-    (re.compile(r"common/python/nextra/mcl/nextra_api.c"), re.compile(r"common/python/nextra/mcl/py_rpc_utils.pxi")), # FIX XMAKE
-    (re.compile(r"challenge_response/pam/pam_cr.so"), re.compile(r"challenge_response/pam/modules.map")), # FIX XMAKE
-    (re.compile(r"outputs/kernel_modules.tar.gz"), re.compile(r"")),                       # WTF happens here? Fixme?
-    (re.compile(r"utils/smp_utils/"), re.compile(r".*\.lock|utils/smp_utils/.*Makefile")), # WTF happens here? Fixme?
-    (re.compile(r"version_info/(scm_info|contained_commits)"), re.compile(r"\.\./\.git/.*")),
-    (re.compile(r"outputs/kerntypes"), re.compile(r"")), # Fix ME by implementing aliasing soflinks or fix XMAKE rules.. &What is e.g., 'kernel_modules-549ae3653fede49fbb6f75162309a91c'?
-    (re.compile(r"outputs/vmlinuz"), re.compile(r"kernel/cached-out/(include/.*|Makefile|scripts/.*|vmlinux)")), # FIX XMAKE?
-    (re.compile(r"outputs/vmlinuz"), re.compile(r"kernel/git-hash|kernel/cached-out/arch/x86_64/boot/bzImage"))  # FIX XMAKE?
-    ]
+    return any(target.endswith(suffix) for suffix in _IGNORED_SUFFICES)
 
 def match_implicit_dependency(dep, targets):
     """Verify if any of paths in 'targets' depends implicitly on 'dep'
@@ -145,6 +127,12 @@ class TargetRule(object):
         self.depfile_deps = list(depfile_deps)
         self.order_only_deps = list(order_only_deps)
         self.rule_name = rule_name
+
+    def __str__(self):
+        return "%s %s: %s | %s || %s" % (
+            self.targets, self.rule_name,
+            self.deps, self.depfile_deps,
+            self.order_only_deps)
 
 class TraceParser(object):
     def __init__(self, input):
@@ -239,7 +227,7 @@ class NinjaManifestParser(object):
                            r'(?<!\$):\s*(?P<rule>\S+)'+
                            r'\s*(?P<all_deps>.*)\s*$')
     def _handle_build_blk(self, blk):
-        V2("** Parsing build block: '%s'" % (blk[0], ))
+        V3("** Parsing build block: '%s'" % (blk[0], ))
         match = re.match(self._build_re, blk[0])
         if not match:
             raise Exception("Error parsing manifest at line:%d: '%s'" % (self.lineno-len(blk), blk[0]))
@@ -268,7 +256,7 @@ class NinjaManifestParser(object):
                     depfile_deps=[],
                     order_only_deps=order,
                     rule_name=rule)
-        V1("** TargetRule** ", repr(edge))
+        V2("** TargetRule** ", str(edge))
         self.edges.append(edge)
         self.edges_attributes[edge] = edge_attrs
 
@@ -557,13 +545,14 @@ class Graph(object):
 
 def build_graph(path, parser_cls, clean_build_graph=None):
     cached_graph_path = path + "%s.pkl" % ("-order" if clean_build_graph else "")
-    if os.path.exists(cached_graph_path) and \
-       os.path.getmtime(cached_graph_path) > os.path.getmtime(path) and \
-       os.path.getmtime(cached_graph_path) > os.path.getmtime(__file__):
-        warn("Loading a cached verion of graph for '%s'" % path)
-        with file(cached_graph_path) as fh:
-            g = pickle.load(fh)
-        return g
+    # TODO: fix to work properly with '-C'
+    # if os.path.exists(cached_graph_path) and \
+    #    os.path.getmtime(cached_graph_path) > os.path.getmtime(path) and \
+    #    os.path.getmtime(cached_graph_path) > os.path.getmtime(__file__):
+    #     warn("Loading a cached verion of graph for '%s'" % path)
+    #     with file(cached_graph_path) as fh:
+    #         g = pickle.load(fh)
+    #     return g
 
     info("Building graph from '%s'" % path)
     with file(path, "r") as fh:
@@ -574,17 +563,53 @@ def build_graph(path, parser_cls, clean_build_graph=None):
     os.rename(cached_graph_path + "~", cached_graph_path)
     return g
 
+def load_config(path):
+    if not os.path.isfile(path):
+        V2("Note: no custom configuration file at: %r" % path)
+        return None
+
+    try:
+        conf = {}
+        execfile(path, conf)
+    except Exception, e:
+        # TODO: give more helpfull errors
+        fatal("Error loading configuration file: %r" % e)
+
+    info("Loaded configuration file: %r" % config_path)
+    if conf.get('IGNORED_SUFFICES'):
+        _IGNORED_SUFFICES = list(conf.get('IGNORED_SUFFICES'))
+        V1("Set ignored suffices to: %r" % _IGNORED_SUFFICES)
+    if conf.get('IMPLICIT_DEPS_MATCHERS'):
+        impl_deps = conf.get('IMPLICIT_DEPS_MATCHERS')
+        _IMPLICIT_DEPS_MATCHERS = list((re.compile(t), re.compile(s)) for t, s in impl_deps)
+        V1("Set implicit matchers to: %r" % impl_deps)
+
+    return conf
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='depslint')
-    parser.add_argument('--manifest', default=_DEFAULT_MANIFEST)
+    parser.add_argument('-C', dest='dir', help="change to DIR before doing anything else")
+    parser.add_argument('-f', dest='manifest', default=_DEFAULT_MANIFEST, help="ninja manifest filename")
+    parser.add_argument('--conf')
     parser.add_argument('-r', '--tracefile', default=_DEFAULT_TRACEFILE)
-    parser.add_argument('-v', '--verbose', action='count', default=0)
+    parser.add_argument('-v', dest='verbose', action='count', default=0)
     parser.add_argument('--version', action='version', version='%(prog)s: v0.1')
     parser.add_argument('targets', nargs='*')
     args = parser.parse_args()
 
     # TODO: make some order here
     _verbose = args.verbose
+
+    if args.chdir:
+        V1("Changing working dir to: %r" % args.chdir)
+        os.chdir(args.chdir)
+
+    # Attmept loading custom configuration file
+    # With custom 'IGNORED_SUFFICES' and 'IMPLICIT_DEPS_MATCHERS' lists
+    config_path = args.conf or os.path.join(os.path.dirname(args.manifest), _DEPSLINT_CFG)
+    conf = load_config(config_path)
+    if args.conf and not conf:
+        fatal("ERROR: couldn;t load configuration file: %r" % args.conf)
 
     ### Build Ninja graphs
     manifest = args.manifest
