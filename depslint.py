@@ -588,13 +588,13 @@ def load_config(path):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='depslint')
-    parser.add_argument('-C', dest='dir', help="change to DIR before doing anything else")
-    parser.add_argument('-f', dest='manifest', default=_DEFAULT_MANIFEST, help="ninja manifest filename")
-    parser.add_argument('--conf')
-    parser.add_argument('-r', '--tracefile', default=_DEFAULT_TRACEFILE)
-    parser.add_argument('-v', dest='verbose', action='count', default=0)
+    parser.add_argument('-C', dest='dir', help='change to DIR before doing anything else')
+    parser.add_argument('-f', dest='manifest', default=_DEFAULT_MANIFEST, help='specify input ninja manifest')
+    parser.add_argument('-r', dest='tracefile', default=_DEFAULT_TRACEFILE, help='specify input trace file')
+    parser.add_argument('--conf', help='load custom configuration from CONF')
+    parser.add_argument('-v', dest='verbose', action='count', default=0, help='increase verbosity level')
     parser.add_argument('--version', action='version', version='%(prog)s: v0.1')
-    parser.add_argument('targets', nargs='*')
+    parser.add_argument('target', nargs='*', help='specify targets to verify, as passed to ninja when traced')
     args = parser.parse_args()
 
     # TODO: make some order here
