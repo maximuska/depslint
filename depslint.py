@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import argparse
+import itertools
 import os
 import re
 import sys
@@ -27,7 +28,6 @@ _DEFAULT_MANIFEST = 'build.ninja'
 
 # Matching targets are silently dropped when loading trace file, as if these
 # were never accessed.
-global _IGNORED_SUFFICES
 _IGNORED_SUFFICES = ['.d', '.pyc', '.rsp']
 
 # Implicit dependencies list. Stores pairs of regexeps matching a
@@ -38,11 +38,13 @@ _IGNORED_SUFFICES = ['.d', '.pyc', '.rsp']
 # invoked for each target built. It will be considered a dependency by deplint,
 # but you couldn't care less. Adding ("", r"calc_crc\.sh") to the list
 # will suppress the errors.
-global _IMPLICIT_DEPS_MATCHERS
-_IMPLICIT_DEPS_MATCHERS = []
+
+_IMPLICIT_DEPS_MATCHERS = ['']
 
 global _verbose
 _verbose = 0
+
+_module_path = os.path.join(os.getcwd(), __file__)
 
 def V1(*strings):
     if _verbose >= 1:
@@ -57,8 +59,14 @@ def V3(*strings):
         print " ".join(strings)
 
 def fatal(msg, ret=-1):
-    print >>sys.stderr, "\033[1;33mWARNING: %s\033[0m" % msg
+    sys.stdout.flush()
+    print >>sys.stderr, "\033[1;41mFATAL: %s\033[0m" % msg
     sys.exit(ret)
+
+def error(msg):
+    if _verbose < 0:
+        return
+    print "\033[1;31mERROR: %s\033[0m" % msg
 
 def warn(msg):
     if _verbose < 0:
@@ -81,11 +89,11 @@ def is_ignored(target):
 def match_implicit_dependency(dep, targets):
     """Verify if any of paths in 'targets' depends implicitly on 'dep'
     to inhibit a 'missing dependency' error."""
-    #print "Matching %r on '%r'" % (dep, targets)
+    V3("looking for an implicit dependency for any of %r on %r" % (targets, dep))
     for target_re, dep_re in _IMPLICIT_DEPS_MATCHERS:
         if not re.match(dep_re, dep):
             continue
-        #print "Dep re matched"
+        V3("Found a rule matching %r, checking for any target match.." % dep)
         for t in targets:
             if re.match(target_re, t):
                 return t
@@ -216,8 +224,8 @@ class NinjaManifestParser(object):
     def _handle_globals(self, blk):
         global_attr = self._parse_attributes(blk)
         self.global_attributes.update(global_attr)
-        if _verbose > 1 and global_attr:
-            print "** Set global attribute: %r" % global_attr
+        if global_attr:
+            V2("** Set global attribute: %r" % global_attr)
 
     def _handle_default_blk(self, blk):
         # TODO: store default target for future reference?
@@ -376,14 +384,13 @@ class Edge(object):
         self.rank = 0
 
 class Graph(object):
-    def __init__(self, from_trules, clean_build_graph=False):
-        self.edges = list()
-        self.targets = dict()
-        self.input_targets = set()
+    def __init__(self, from_trules, top_targets, is_clean_build_graph):
+        self.targets_edge_map = dict()
+        self.required_targets = set()
 
         self.duplicate_target_rules = set()
-        self.top_targets = list()
 
+        self.top_targets = list()
         self.targets_by_ranks = defaultdict(list)
         self.top_rank_targets = list()
 
@@ -395,63 +402,64 @@ class Graph(object):
             # Incremental build - depfiles exist, and order rules can be neglected assuming that
             #  clean order build is correct (and a missing depfile triggers target rebuild).
             # Implicit and explicit dependencies from manifest always play.
-            deps = trule.deps + (trule.order_only_deps if clean_build_graph else trule.depfile_deps)
+            deps = trule.deps + (trule.order_only_deps if is_clean_build_graph else trule.depfile_deps)
             edge = Edge(provides=trule.targets,
                         requires=deps,
                         is_phony=(trule.rule_name == "phony"))
             self._add_edge(edge)
 
-        self._eval_graph_properties()
+        self._eval_graph_properties(top_targets)
 
     def _add_edge(self, edge):
-        # Make sure 'filter_target_paths' is called on all paths for consistency.
-        self.edges.append(edge)
-
-        # Populate targets dictionary, take notes of duplicate target rules
+        # TODO: warn if 'filter_target_paths' matches targets specified in the manifest
+        # Populate targets dictionary, take note of duplicate target rules
         for o in edge.provides:
-            if self.targets.get(o):
+            if self.targets_edge_map.get(o):
                 self.duplicate_target_rules.add(o)
-            self.targets[o] = edge
+            self.targets_edge_map[o] = edge
 
-        self.input_targets.update(edge.requires)
+        self.required_targets.update(edge.requires)
 
-    def _eval_graph_properties(self):
-        debug("Finding top targets...")
-        self._eval_top_targets()
+    def _eval_graph_properties(self, top_targets):
+        if not top_targets:
+            V1("Finding all terminal targets...")
+            top_targets = self._eval_top_targets()
+        self.top_targets = list(top_targets)
 
-        debug("Calculating deps closures and nodes ranks...")
-        for target in self.top_targets:
+        V1("Terminal targets (up to first 5): %r" % top_targets[:5])
+        V1("Calculating deps closures and nodes ranks...")
+        for target in top_targets:
             self._calc_deps_closure_in_tree(target)
         self.top_rank = sorted(self.targets_by_ranks.keys())[-1]
         self.top_rank_targets = self.targets_by_ranks[self.top_rank]
+        V1("Top rank: %d" % self.top_rank)
 
     def get_target_rank(self, target):
-        if not self.targets.get(target):
+        if not self.targets_edge_map.get(target):
             raise Exception("ERROR: unknown target: '%s'" % target)
-        return self.targets[target].rank
+        return self.targets_edge_map[target].rank
 
     def is_phony_target(self, target):
-        edge = self.targets.get(target)
+        edge = self.targets_edge_map.get(target)
         if not edge:
             return False
         return edge.is_phony
 
     def is_static_target(self, target):
-        edge = self.static_targets.get(target)
-        if not edge:
-            return False
-        return edge.is_phony
+        e = self.targets_edge_map.get(target, None)
+        return not e or e.rank == 0
 
     def get_edge(self, target):
         """Returns an edge corresponding to target build rule, or
         'None' if there is no rule to build the target (e.g., a static target)."""
-        self.targets.get(target, None)
+        return self.targets_edge_map.get(target, None)
 
     def _eval_top_targets(self):
-        top_targets_set = set(self.targets.keys()) - self.input_targets
-        if not top_targets_set and self.targets:
+        # Top targets are not required by any other target in the build graph
+        top_targets_set = set(self.targets_edge_map.keys()) - self.required_targets
+        if not top_targets_set and self.targets_edge_map:
             raise Exception("ERROR: could not isolate top targets, check inputs for dependency loops")
-        self.top_targets = sorted(top_targets_set)
+        return sorted(top_targets_set)
 
     def target_iterate_deps_closure(self, root, targets_only=False, depends={}):
         frontend = [root]
@@ -459,7 +467,7 @@ class Graph(object):
         depends[root] = None
         while frontend:
             path = frontend.pop(0)
-            edge = self.targets.get(path, None)
+            edge = self.targets_edge_map.get(path, None)
             if edge:
                 for p in edge.requires:
                     if p in visited:
@@ -467,7 +475,7 @@ class Graph(object):
                     frontend.append(p)
                     visited.add(p)
                     depends[p] = path
-                    if not targets_only or p in self.targets:
+                    if not targets_only or p in self.targets_edge_map:
                         yield p
 
     def _calc_deps_closure_in_tree(self, target):
@@ -479,13 +487,14 @@ class Graph(object):
         if target in visited:
             raise Exception("Dependencies loop detected: %r" % (visited + [target],))
 
-        edge = self.targets.get(target, None)
+        edge = self.targets_edge_map.get(target, None)
+        # Static source?
         if not edge:
-            # Static input
+            self.targets_by_ranks[0].append(target)
             return 0
 
+        # Already processed?
         if edge.rank:
-            # Already evaluated
             return edge.rank
 
         if edge.requires:
@@ -498,8 +507,11 @@ class Graph(object):
                 closure.update(self.target_deps_closure[p])
             self.target_deps_closure[target] = closure
         else:
-            # Non-static target w/o dependencies
-            rank = (0 if edge.is_phony else 1)
+            if edge.is_phony:
+                rank = edge.rank = 0
+            else:
+                # Non-static target w/no dependencies
+                rank = edge.rank = 1
 
         self.targets_by_ranks[rank].append(target)
         return rank
@@ -507,57 +519,27 @@ class Graph(object):
     def get_deps_closure(self, target_path):
         return self.target_deps_closure[target_path]
 
-    def iterate_target_paths_by_ranks(self):
+    def iterate_targets_by_rank(self, include_static_targets):
         for rank in sorted(self.targets_by_ranks.keys()):
+            if rank == 0 and not include_static_targets:
+                continue
             for tpath in self.targets_by_ranks[rank]:
                 yield tpath
 
-    @classmethod
-    def backtrace_to_root(cls, depends, p):
-        l = list()
-        while p:
-            l.append(p)
-            p = depends[p]
-        return l
-
-    def print_duplicate_target_edges(self):
-        if self.duplicate_target_rules:
-            warn("Detected multiple rules modifying targets:")
-            for t in sorted(self.duplicate_target_rules):
-                print "  %s" % t
-
-    def print_target_deps(self, root, targets_only=False):
-        for t in self.target_iterate_deps_closure(root, targets_only):
-            print t
-
-    def print_targets_by_ranks(self):
-        for rank in reversed(sorted(self.targets_by_ranks.keys())):
-            lst = ", ".join(self.targets_by_ranks[rank])
-            if len(lst) > 120:
-                lst = lst[:110] + "....."
-            print "Rank %2d: %4d target(s) [%s]" % (rank, len(self.targets_by_ranks[rank]), lst)
-
-    def print_top_rank_targets(self):
-        for target in self.top_rank_targets:
-            print "Target: '%s'" % target
-            print " + rank: %d" % self.get_target_rank(target)
-            print " + deps closure size: %d" % len(self.get_deps_closure(target))
-
-def build_graph(path, parser_cls, clean_build_graph=None):
+def build_graph(path, parser_cls, targets=None, clean_build_graph=None):
     cached_graph_path = path + "%s.pkl" % ("-order" if clean_build_graph else "")
-    # TODO: fix to work properly with '-C'
-    # if os.path.exists(cached_graph_path) and \
-    #    os.path.getmtime(cached_graph_path) > os.path.getmtime(path) and \
-    #    os.path.getmtime(cached_graph_path) > os.path.getmtime(__file__):
-    #     warn("Loading a cached verion of graph for '%s'" % path)
-    #     with file(cached_graph_path) as fh:
-    #         g = pickle.load(fh)
-    #     return g
+    if os.path.exists(cached_graph_path) and \
+       os.path.getmtime(cached_graph_path) > os.path.getmtime(path) and \
+       os.path.getmtime(cached_graph_path) > os.path.getmtime(_module_path):
+        warn("Loading a cached verion of graph for '%s'" % path)
+        with file(cached_graph_path) as fh:
+            g = pickle.load(fh)
+        return g
 
     info("Building graph from '%s'" % path)
     with file(path, "r") as fh:
         parser = parser_cls(fh)
-        g = Graph(parser.iterate_target_rules(), clean_build_graph)
+        g = Graph(parser.iterate_target_rules(), targets, clean_build_graph)
     with file(cached_graph_path + "~", "w") as fh:
         pickle.dump(g, fh)
     os.rename(cached_graph_path + "~", cached_graph_path)
@@ -577,14 +559,74 @@ def load_config(path):
 
     info("Loaded configuration file: %r" % config_path)
     if conf.get('IGNORED_SUFFICES'):
+        global _IGNORED_SUFFICES
         _IGNORED_SUFFICES = list(conf.get('IGNORED_SUFFICES'))
         V1("Set ignored suffices to: %r" % _IGNORED_SUFFICES)
     if conf.get('IMPLICIT_DEPS_MATCHERS'):
         impl_deps = conf.get('IMPLICIT_DEPS_MATCHERS')
+        global _IMPLICIT_DEPS_MATCHERS
         _IMPLICIT_DEPS_MATCHERS = list((re.compile(t), re.compile(s)) for t, s in impl_deps)
         V1("Set implicit matchers to: %r" % impl_deps)
 
     return conf
+
+def compare_dependencies(trace_graph, manifest_graph, clean_build):
+    missing = defaultdict(list)
+    ignored_missing = defaultdict(list)
+    for tp in manifest_graph.iterate_targets_by_rank(include_static_targets=False):
+        if manifest_graph.is_phony_target(tp):
+            V2("Skipping phony: %s" % tp)
+            continue
+
+        edge_in_trace = trace_graph.get_edge(tp)
+        if not edge_in_trace:
+            warn("manifest target '%s' doesn't present in strace graph" % tp)
+            continue
+
+        for dep in edge_in_trace.requires - manifest_graph.get_deps_closure(tp):
+            if clean_build and manifest_graph.is_static_target(dep):
+                # Only dependencies on the non-static targets are critical
+                # for a clean build.
+                continue
+
+            if match_implicit_dependency(dep, [tp] + list(manifest_graph.get_deps_closure(tp))):
+                # The dependency 'tp | deps' IS missing in manifest graph,
+                #  but 'implicit' dependencies rules fix this. Inhibit the warning.
+                ignored_missing[tp].append(dep)
+                continue
+            missing[tp].append(dep)
+    return missing, ignored_missing
+
+def print_missing_dependencies(manifest_graph, missing, ignored_missing, clean_build):
+    dtype="ORDER " if clean_build else ""
+    for t, t_deps in missing.iteritems():
+        error("target '%s' is missing %sdependencies on: %r" % (t, dtype, t_deps))
+        #TODO: print path from t to top in verbose mode.
+    if _verbose > 0:
+        for t, t_ignored_deps in ignored_missing.iteritems():
+            warn("ignored missing %sdependencies of '%s' on %r" % (dtype, t, t_ignored_deps))
+            #TODO: print path from t to top in verbose mode.
+    else:
+        if ignored_missing:
+            warn("%sDependency errors inhibited for %d targets due to implicit dependency rules" % (dtype, len(ignored_missing)))
+            all_missing = set(itertools.chain(*ignored_missing.values()))
+            warn("Distinct unspecifed dependencies num: %d" % (len(all_missing),))
+
+def print_targets_by_ranks(graph):
+    for rank in reversed(sorted(graph.targets_by_ranks.keys())):
+        lst = ", ".join(graph.targets_by_ranks[rank])
+        if len(lst) > 120:
+            lst = lst[:110] + "....."
+        print "Rank %2d: %4d target(s) [%s]" % (rank, len(graph.targets_by_ranks[rank]), lst)
+
+def print_targets_stats(graph, targets):
+    for target in targets:
+        if not graph.get_edge(target):
+            warn("Target '%s' not present in the graph" % target)
+            continue
+        print "Target: %r" % target
+        print " + rank: %d" % graph.get_target_rank(target)
+        print " + deps closure size: %d" % len(graph.get_deps_closure(target))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='depslint')
@@ -597,130 +639,74 @@ if __name__ == '__main__':
     parser.add_argument('target', nargs='*', help='specify targets to verify, as passed to ninja when traced')
     args = parser.parse_args()
 
-    # TODO: make some order here
+    # Set global verbosity level
     _verbose = args.verbose
 
-    if args.chdir:
-        V1("Changing working dir to: %r" % args.chdir)
-        os.chdir(args.chdir)
+    # Process "-C"
+    if args.dir:
+        V1("Changing working dir to: %r" % args.dir)
+        os.chdir(args.dir)
+
+    # TODO: validate files existence (manifest, traces & config)
 
     # Attmept loading custom configuration file
     # With custom 'IGNORED_SUFFICES' and 'IMPLICIT_DEPS_MATCHERS' lists
-    config_path = args.conf or os.path.join(os.path.dirname(args.manifest), _DEPSLINT_CFG)
-    conf = load_config(config_path)
-    if args.conf and not conf:
-        fatal("ERROR: couldn;t load configuration file: %r" % args.conf)
-
-    ### Build Ninja graphs
-    manifest = args.manifest
-    ninja_clean_build_graph = build_graph(manifest, NinjaManifestParser, True)
+    if args.conf:
+        if load_config(args.conf) is None:
+            fatal("Couldn't load configuration file: %r" % args.conf)
+    else:
+        config_path = os.path.join(os.path.dirname(args.manifest), _DEPSLINT_CFG)
+        load_config(config_path)
 
     ### Load Strace graph
     trace_graph = build_graph(args.tracefile, TraceParser)
 
-    static_targets = set()
     info("=== Pass #1: checking clean build order constraints ===")
-    info("=== (may lead to clean build failure or, more rarely, in incorrect builds ===")
-    info("=== (if generation of includes races with compilation badly ===")
-    for tp in ninja_clean_build_graph.iterate_target_paths_by_ranks():
-        if ninja_clean_build_graph.is_phony_target(tp):
-            continue
-
-        target_in_trace = trace_graph.targets.get(tp)
-        if not target_in_trace:
-            # TBD: check and print these in separate?
-            warn("WARNING: ninja manifest target '%s' doesn't present in strace graph" % tp)
-            continue
-
-        missing = []
-        ignored = []
-        for depp in target_in_trace.requires - ninja_clean_build_graph.get_deps_closure(tp):
-            if ninja_clean_build_graph.get_edge(depp) is None:
-                # Only dependencies on the non-static targets are critical
-                # for a clean build.
-                static_targets.add(depp)
-                continue
-            matching_dep = match_implicit_dependency(depp, [tp] + list(ninja_clean_build_graph.get_deps_closure(tp)))
-            if matching_dep:
-                ignored.append(depp)
-                continue
-            missing.append(depp)
-        if missing:
-            print "ERROR: target '%s' requires (order) dependency on: %r" % (tp, missing)
-        if ignored:
-            warn("WARNING: ignored missing (order) dependencies of '%s' on %r" % (tp, ignored))
+    info("=== (may lead to clean build failure or, rarely, to incorrect builds) ===")
+    ninja_clean_build_graph = build_graph(args.manifest, NinjaManifestParser, clean_build_graph=True)
+    missing, ignored = compare_dependencies(trace_graph, ninja_clean_build_graph, clean_build=True)
+    print_missing_dependencies(ninja_clean_build_graph, missing, ignored, clean_build=True)
 
     ### Pass #2: checking full dependencies
-    ninja_incremental_graph = build_graph(manifest, NinjaManifestParser)
     info("=== Pass #2: checking for missing dependencies ===")
     info("=== (may lead to incomlete incremental builds if any) ===")
-    for tp in ninja_incremental_graph.iterate_target_paths_by_ranks():
-        if ninja_incremental_graph.is_phony_target(tp):
-            continue
-
-        target_in_trace = trace_graph.targets.get(tp)
-        if not target_in_trace:
-            warn("WARNING: manifest target '%s' doesn't present in strace graph" % tp)
-            continue
-
-        missing = []
-        ignored = []
-        for depp in target_in_trace.requires - ninja_incremental_graph.get_deps_closure(tp):
-            matching_dep = match_implicit_dependency(depp, [tp] + list(ninja_incremental_graph.get_deps_closure(tp)))
-            if matching_dep:
-                ignored.append(depp)
-                continue
-            missing.append(depp)
-        if missing:
-            print "ERROR: target '%s' dependencies missing: %r" % (tp, missing)
-        # if ignored:
-        #     warn("WARNING: ignored missing dependencies of '%s' on %r" % \
-        #          (tp, ignored))
-
-    # Currently requiring and picking up the first target, etc
-    target = args.targets[0]
+    ninja_incremental_graph = build_graph(args.manifest, NinjaManifestParser, clean_build_graph=False)
+    missing, ignored = compare_dependencies(trace_graph, ninja_incremental_graph, clean_build=False)
+    print_missing_dependencies(ninja_incremental_graph, missing, ignored, clean_build=False)
 
     warn("=== Statistics ===")
-    gdepends, ngdepends = {}, {}
-    gtargets  = set(trace_graph.target_iterate_deps_closure(target, depends=gdepends))
-    ngtargets = set(ninja_incremental_graph.target_iterate_deps_closure(target, depends=ngdepends))
+    top_targets = ninja_clean_build_graph.top_targets
+    info("Top targets in '%s' with statistics:" % args.manifest)
+    print "%r" % (top_targets,)
+    print_targets_stats(ninja_incremental_graph, top_targets)
+
+    info("Statistics from trace graph:")
+    print_targets_stats(trace_graph, top_targets)
 
     info("=== Targets in manifest, not in the traces ===")
     info("=== (these may indicate somebody's mistakes somewhere) ===")
     info("=== (and are adding an unnecessary overhead on the build system) ===")
+    gtargets  = set().union(*list(trace_graph.get_deps_closure(t) for t in top_targets))
+    ngtargets = set().union(*list(ninja_incremental_graph.get_deps_closure(t) for t in top_targets))
     for x in sorted(ngtargets - gtargets):
         if ninja_incremental_graph.is_phony_target(x):
             continue
-        print "'%s': %s" % (x, " > ".join(Graph.backtrace_to_root(ngdepends, x)[1:]))
+        #TODO: print a path from target to the top of the graph (add extra refs to graph edges?)
+        print "'%s'" % (x, )
 
-    # TODO
-    # info("Totally: %d targets were ignored (prefixed with one of %r or ending with: %r)" % (
-    #     len(ignored_set),_IGNORED_PREFIXES, _IGNORED_SUFFICES))
+    info("Targets from '%s' by order-dependencies rank:" % args.manifest)
+    print_targets_by_ranks(ninja_clean_build_graph)
 
-    info("Top targets from '%s':" % manifest)
-    print "inc: %r" % (sorted(trc_filter_ignored(ninja_incremental_graph.top_targets)),)
-    print "ord: %r" % (sorted(trc_filter_ignored(ninja_clean_build_graph.top_targets)),)
-
-    info("Targets from '%s' by order-rank:" % manifest)
-    ninja_clean_build_graph.print_targets_by_ranks()
-
-    info("Targets from '%s' by rank:" % manifest)
-    ninja_incremental_graph.print_targets_by_ranks()
-
-    info("Top RANK non-phony target(s) from '%s':" % manifest)
-    ninja_incremental_graph.print_top_rank_targets()
+    info("Targets from '%s' by rebuild-dependencies rank:" % args.manifest)
+    print_targets_by_ranks(ninja_incremental_graph)
 
     info("Targets from TRACE by rank:")
-    trace_graph.print_targets_by_ranks()
-    info("Top RANK target(s) from TRACE:")
-    trace_graph.print_top_rank_targets()
+    print_targets_by_ranks(trace_graph)
 
-    # Warn about any duplicate target build detected when tracing.
-    # FIXME: disabled until will factor the test out to ignore 'reload' targets
-    trace_graph.print_duplicate_target_edges()
+    #TODO: warn about any duplicate target build detected when tracing.
+    #TODO: factor out 'reload' targets
+    # warn("Detected multiple rules modifying targets:")
+    # print trace_graph.duplicate_target_rules()
 
-    ###
-    ###
-    ###
-
+    info("That's all!")
     sys.exit(0)
