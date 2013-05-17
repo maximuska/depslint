@@ -28,6 +28,7 @@ class NinjaManifestParserIOHooked(depslint.NinjaManifestParser):
     def _read_depfile(self, path):
         return self.files.get(path)
 
+#TODO: rename edges to 'build rules'
 class NinjaManifestParserTests(unittest.TestCase):
     def testBuildRulesParse(self):
         manifest = """
@@ -52,7 +53,7 @@ build outA: RULE |
         self.assertItemsEqual(e.targets,["out1", "out2"])
         self.assertItemsEqual(e.deps, ["in1", "in2", "ein1", "ein2"])
         self.assertItemsEqual(e.order_only_deps, ["oin1", "oin2"])
-        self.assertEqual(e.rule, "RULE")
+        self.assertEqual(e.rule_name, "RULE")
         self.assertEqual(parser._eval_edge_attribute(e, "in"), "in1 in2")
 
         e = edges.pop(0)
@@ -61,7 +62,7 @@ build outA: RULE |
         self.assertItemsEqual(e.order_only_deps, [])
         self.assertEqual(parser._eval_edge_attribute(e, "in"), "in2")
         self.assertEqual(parser._eval_edge_attribute(e, "out"), "out3")
-        self.assertEqual(e.rule, "RULE")
+        self.assertEqual(e.rule_name, "RULE")
 
         e = edges.pop(0)
         self.assertItemsEqual(e.targets,["out4"])
@@ -69,7 +70,7 @@ build outA: RULE |
         self.assertItemsEqual(e.order_only_deps, ["oin3"])
         self.assertEqual(parser._eval_edge_attribute(e, "in"), "")
         self.assertEqual(parser._eval_edge_attribute(e, "out"), "out4")
-        self.assertEqual(e.rule, "RULE")
+        self.assertEqual(e.rule_name, "RULE")
 
         e = edges.pop(0)
         self.assertItemsEqual(e.targets,["out5"])
@@ -77,7 +78,7 @@ build outA: RULE |
         self.assertItemsEqual(e.order_only_deps, [])
         self.assertEqual(parser._eval_edge_attribute(e, "in"), "")
         self.assertEqual(parser._eval_edge_attribute(e, "out"), "out5")
-        self.assertEqual(e.rule, "RULE")
+        self.assertEqual(e.rule_name, "RULE")
 
         e = edges.pop(0)
         self.assertItemsEqual(e.targets,["out6"])
@@ -85,7 +86,7 @@ build outA: RULE |
         self.assertItemsEqual(e.order_only_deps, [])
         self.assertEqual(parser._eval_edge_attribute(e, "in"), "in5")
         self.assertEqual(parser._eval_edge_attribute(e, "out"), "out6")
-        self.assertEqual(e.rule, "RULE")
+        self.assertEqual(e.rule_name, "RULE")
 
         e = edges.pop(0)
         self.assertItemsEqual(e.targets,["out7"])
@@ -93,7 +94,7 @@ build outA: RULE |
         self.assertItemsEqual(e.order_only_deps, ["in6"])
         self.assertEqual(parser._eval_edge_attribute(e, "in"), "")
         self.assertEqual(parser._eval_edge_attribute(e, "out"), "out7")
-        self.assertEqual(e.rule, "RULE")
+        self.assertEqual(e.rule_name, "RULE")
 
         e = edges.pop(0)
         self.assertItemsEqual(e.targets,["out8"])
@@ -101,7 +102,7 @@ build outA: RULE |
         self.assertItemsEqual(e.order_only_deps, [])
         self.assertEqual(parser._eval_edge_attribute(e, "in"), "")
         self.assertEqual(parser._eval_edge_attribute(e, "out"), "out8")
-        self.assertEqual(e.rule, "RULE")
+        self.assertEqual(e.rule_name, "RULE")
 
         e = edges.pop(0)
         self.assertItemsEqual(e.targets,["out9"])
@@ -109,7 +110,7 @@ build outA: RULE |
         self.assertItemsEqual(e.order_only_deps, [])
         self.assertEqual(parser._eval_edge_attribute(e, "in"), "")
         self.assertEqual(parser._eval_edge_attribute(e, "out"), "out9")
-        self.assertEqual(e.rule, "RULE")
+        self.assertEqual(e.rule_name, "RULE")
 
         e = edges.pop(0)
         self.assertItemsEqual(e.targets,["outA"])
@@ -117,7 +118,7 @@ build outA: RULE |
         self.assertItemsEqual(e.order_only_deps, [])
         self.assertEqual(parser._eval_edge_attribute(e, "in"), "")
         self.assertEqual(parser._eval_edge_attribute(e, "out"), "outA")
-        self.assertEqual(e.rule, "RULE")
+        self.assertEqual(e.rule_name, "RULE")
 
         self.assertItemsEqual(edges, list())
 
@@ -135,7 +136,7 @@ build a/../outB: phony ./a/b | a//c || a/../a/d
         self.assertItemsEqual(e.order_only_deps, ["a/d"])
         self.assertEqual(parser._eval_edge_attribute(e, "in"), "a/b")
         self.assertEqual(parser._eval_edge_attribute(e, "out"), "outB")
-        self.assertEqual(e.rule, "phony")
+        self.assertEqual(e.rule_name, "phony")
 
         self.assertItemsEqual(edges, list())
 
