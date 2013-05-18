@@ -39,7 +39,7 @@ _IGNORED_SUFFICES = ['.d', '.pyc', '.rsp']
 # but you couldn't care less. Adding ("", r"calc_crc\.sh") to the list
 # will suppress the errors.
 
-_IMPLICIT_DEPS_MATCHERS = ['']
+_IMPLICIT_DEPS_MATCHERS = []
 
 _module_path = os.path.join(os.getcwd(), __file__)
 
