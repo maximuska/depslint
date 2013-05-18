@@ -28,7 +28,6 @@ class NinjaManifestParserIOHooked(depslint.NinjaManifestParser):
     def _read_depfile(self, path):
         return self.files.get(path)
 
-#TODO: rename edges to 'build rules'
 class NinjaManifestParserTests(unittest.TestCase):
     def testBuildRulesParse(self):
         manifest = """
@@ -46,7 +45,7 @@ build out8: RULE | ||
 build out9: RULE ||
 build outA: RULE |
 """
-        parser = NinjaManifestParserIOHooked(manifest.splitlines())
+        parser = NinjaManifestParserIOHooked(manifest.splitlines(True))
         edges = list(parser.iterate_target_rules())
 
         e = edges.pop(0)
@@ -127,7 +126,7 @@ build outA: RULE |
 # Paths normalization
 build a/../outB: phony ./a/b | a//c || a/../a/d
 """
-        parser = NinjaManifestParserIOHooked(manifest.splitlines())
+        parser = NinjaManifestParserIOHooked(manifest.splitlines(True))
         edges = list(parser.iterate_target_rules())
 
         e = edges.pop(0)
@@ -164,7 +163,7 @@ build ${v1}2: RULE prefix$v2.ext
 # Rule scope and global scope
 build ${v1}3: phony
 """
-        parser = NinjaManifestParserIOHooked(manifest.splitlines())
+        parser = NinjaManifestParserIOHooked(manifest.splitlines(True))
         edges = list(parser.iterate_target_rules())
 
         e = edges.pop(0)
@@ -223,7 +222,7 @@ v2 = in
 build out: phony $v2
   v2 = $v2.$v2
 """
-        parser = NinjaManifestParserIOHooked(manifest.splitlines())
+        parser = NinjaManifestParserIOHooked(manifest.splitlines(True))
         edges = list(parser.iterate_target_rules())
 
         e = edges.pop(0)
@@ -248,7 +247,7 @@ build out3: RULE
 """
         files = ({"out1.d":"out1: din1 din2",
                   "out2.d":"out2: "})
-        parser = NinjaManifestParserIOHooked(manifest.splitlines(), files)
+        parser = NinjaManifestParserIOHooked(manifest.splitlines(True), files)
         edges = list(parser.iterate_target_rules())
 
         e = edges.pop(0)
@@ -327,8 +326,8 @@ class TraceParserTests(unittest.TestCase):
     def testIterateTargetRules(self):
         input = """{'OUT': ['out1', 'out2'], 'IN': ['in1', 'in2']}
 {'OUT': ['out3'], 'IN': []}
-""".splitlines()
-        parser = depslint.TraceParser(input)
+"""
+        parser = depslint.TraceParser(input.splitlines(True))
         parser.iterate_target_rules()
         edges = list(parser.iterate_target_rules())
 

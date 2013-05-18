@@ -15,12 +15,10 @@
 # limitations under the License.
 
 import argparse
-import itertools
 import os
 import re
 import sys
 import time
-import cPickle as pickle
 from collections import defaultdict
 
 _DEPSLINT_CFG = '.depslint'
@@ -148,7 +146,7 @@ class DepfileParser(object):
     _depfile_unescape_re = re.compile(r'\\([ \\?*|])') # TODO: handle $ and !
 
     def parse_depfile(self, buf):
-        buf = buf.replace('\\\n','') # unescape '\n's
+        buf = buf.replace('\\\n','') # unescape and remove '\n's
         match = re.match(self._depfile_parse_re, buf)
         if not match or not match.group('targets'):
             raise Exception("Error parsing depfile: '%s'" % buf)
@@ -185,7 +183,6 @@ class TraceParser(object):
     def _iterate_target_rules(self, input):
         for self.lineno, line in enumerate(input, start=1):
             tok = eval(line)
-            #TODO: move the filtering to depstrace?
             targets = trc_filter_ignored(tok['OUT'])
             deps = trc_filter_ignored(tok['IN'])
             if not targets:
@@ -208,8 +205,8 @@ class NinjaManifestParser(object):
         self.rules = dict(phony=dict(attributes=[]))
 
         self._parse()
-        # FIXME: should be able to do this 'per tested target tree' /
-        # or on demand
+        # FIXME: should do this 'per tested target tree' / or on
+        # demand. Becomes less urgent with ninja 'deps' support.
         self._load_depfiles()
 
     def _parse(self):
@@ -315,7 +312,7 @@ class NinjaManifestParser(object):
 
     _attr_re = re.compile(r'\s*(?P<k>\w+)\s*=\s*(?P<v>.*?)\s*$') # key = val
     def _parse_attributes(self, blk):
-        #TODO: eval/expand attributes as we parse!
+        #TODO: fix to eval/expand attributes as we parse!
 
         attributes = dict()
         for line in blk:
@@ -326,11 +323,11 @@ class NinjaManifestParser(object):
         return attributes
 
     def _iterate_manifest_blocks(self, fh):
-        # After stripping comments and joining escaped EOLs,
-        #  'block' always starts with a 'header' at position '0',
-        #  then optionally followed by a couple of 'indented key = val' lines.
         blk = []
         for line in self._iterate_manifest_lines(fh):
+            # After stripping comments and joining escaped EOLs,
+            #  'block' always starts with a 'header' at position '0',
+            #  then optionally followed by a couple of 'indented key = val' lines.
             if blk and not line[0].isspace():
                 yield blk
                 blk = []
@@ -593,9 +590,8 @@ class Graph(object):
             self._do_calc_products_closure(source, visited)
 
     def _do_calc_products_closure(self, source, visited):
-        # TODO: rewrite to use top-down BFS (to limit scope to the specified targets)
-        # See then if it is possible to do 'deps' closure calculation 'on the way back'?
-        #from collections import OrderedDict ..
+        # TODO: rewrite to use top-down BFS (to limit scope to the specified targets),
+        # see then if it is possible to do 'deps' closure calculation 'on the way back'?
 
         # Cycles detection (just in case)
         if source in visited:
@@ -631,7 +627,7 @@ def load_config(path):
         conf = {}
         execfile(path, conf)
     except Exception, e:
-        # TODO: give more helpfull errors
+        # TODO: give more helpful errors
         fatal("Error loading configuration file: %r" % e)
 
     info("Loaded configuration file: %r" % config_path)
@@ -699,13 +695,13 @@ def print_missing_dependencies(manifest_graph, missing, ignored_missing, clean_b
     dtype="ORDER " if clean_build else ""
     for t, t_deps in missing.iteritems():
         error("target '%s' is missing %sdependencies on: %r" % (t, dtype, t_deps))
-        #TODO: print path from t to top in verbose mode.
+        #TODO: print path from t to top in verbose mode?
 
     if ignored_missing:
         warn("%sDependency errors inhibited for %d targets due to implicit dependency rules" % (dtype, len(ignored_missing)))
     for t, t_ignored_deps in ignored_missing.iteritems():
         V1("Ignoring missing %sdependencies of '%s' on %r" % (dtype, t, t_ignored_deps))
-        #TODO: print path from t to top in verbose mode.
+        #TODO: print path from t to top in verbose mode?
 
 def print_targets_by_ranks(graph):
     for rank in sorted(graph.targets_by_ranks.keys(), reverse=True):
