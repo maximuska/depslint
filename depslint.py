@@ -24,6 +24,7 @@ from collections import defaultdict
 _DEPSLINT_CFG = '.depslint'
 _DEFAULT_TRACEFILE = 'deps.lst'
 _DEFAULT_MANIFEST = 'build.ninja'
+_SUPPORTED_NINJA_VER = "1.2"
 
 # Matching targets are silently dropped when loading trace file, as if these
 # were never accessed.
@@ -200,6 +201,8 @@ class NinjaManifestParser(object):
         self.global_attributes = dict()
         self.edges_attributes = dict()
         self.edges = list()
+        self.default_targets = []
+        self.ninja_required_version = 0.0
 
         # Initializing rules list with a 'phony' rule
         self.rules = dict(phony=dict(attributes=[]))
@@ -209,6 +212,12 @@ class NinjaManifestParser(object):
         # demand. Becomes less urgent with ninja 'deps' support.
         self._load_depfiles()
 
+    def iterate_target_rules(self):
+        return iter(self.edges)
+
+    def get_default_targets(self):
+        return self.default_targets
+
     def _parse(self):
         for blk in self._iterate_manifest_blocks(self.input):
             if blk[0].startswith('build '):
@@ -217,6 +226,12 @@ class NinjaManifestParser(object):
                 self._handle_rule_blk(blk)
             elif blk[0].startswith('default '):
                 self._handle_default_blk(blk)
+            elif blk[0].startswith('pool '):
+                self._handle_pool_blk(blk)
+            elif blk[0].startswith('include '):
+                self._handle_include(blk)
+            elif blk[0].startswith('subninja '):
+                self._handle_subninja(blk)
             else:
                 self._handle_globals(blk)
 
@@ -228,6 +243,10 @@ class NinjaManifestParser(object):
     def _load_depfiles(self):
         parser = DepfileParser()
         for edge in self.edges:
+            # TODO: support 'deps' dependencies format
+            if self._eval_edge_attribute(edge, 'deps'):
+                warn("'deps' dependencies format specified for targets %r is not supported" % (list(edge.provides), ))
+
             depfile = self._eval_edge_attribute(edge, 'depfile')
             if not depfile:
                 continue
@@ -255,14 +274,35 @@ class NinjaManifestParser(object):
             edge.depfile_deps = dep_inputs
 
     def _handle_globals(self, blk):
-        global_attr = self._parse_attributes(blk)
+        global_attr = dict(self._parse_attributes(blk))
         self.global_attributes.update(global_attr)
         if global_attr:
             V2("** Set global attribute: %r" % global_attr)
+        self._check_required_version(global_attr)
 
     def _handle_default_blk(self, blk):
-        # TODO: store default target for future reference?
+        targets_str = blk[0][len('default '):]
+        self.default_targets = self._split_unescape_and_eval(targets_str, self.global_attributes)
+
+    def _handle_pool_blk(self, blk):
+        # Just skipping over
         pass
+
+    def _handle_include(self, blk):
+        fatal("'include' keyword support not implemented, wanna help?")
+
+    def _handle_subninja(blk):
+        fatal("'subninja' keyword support not implemented, wanna help?")
+
+    def _check_required_version(self, attrs):
+        if self.ninja_required_version:
+            return
+        self.ninja_required_version = float(attrs.get('ninja_required_version', 0))
+        V2("** ninja_required_version: %r" % self.ninja_required_version)
+        if self.ninja_required_version > _SUPPORTED_NINJA_VER:
+            warn("Ninja version required in manifest is newer than supported (%r vs %r)",
+                 self.ninja_required_version, _SUPPORTED_NINJA_VER)
+            warn("Trying to continue but the results may be meaningless...")
 
     _build_re = re.compile(r'build\s+(?P<out>.+)\s*'+
                            r'(?<!\$):\s*(?P<rule>\S+)'+
@@ -276,7 +316,7 @@ class NinjaManifestParser(object):
         ins, implicit, order = self._split_deps(all_deps)
 
         # TODO: fix to evaluate along the parsing to avoid possible cycles
-        edge_attrs = self._parse_attributes(blk[1:])
+        edge_attrs = dict(self._parse_attributes(blk[1:]))
 
         # prep attributes scope
         scope = self.global_attributes.copy()
@@ -307,20 +347,18 @@ class NinjaManifestParser(object):
         if not match:
             raise Exception("Error parsing manifest at line:%d: '%s'" % (self.lineno-len(blk), blk[0]))
         rule = match.group('rule')
-        attributes = self._parse_attributes(blk[1:])
+        attributes = dict(self._parse_attributes(blk[1:]))
         self.rules[rule] = dict(attributes=attributes)
 
     _attr_re = re.compile(r'\s*(?P<k>\w+)\s*=\s*(?P<v>.*?)\s*$') # key = val
     def _parse_attributes(self, blk):
         #TODO: fix to eval/expand attributes as we parse!
 
-        attributes = dict()
         for line in blk:
             match = re.match(self._attr_re, line)
             if not match:
                 raise Exception("Error parsing manifest, expecting key=val, got: '%s'" % line)
-            attributes[match.group('k')] = match.group('v')
-        return attributes
+            yield (match.group('k'), match.group('v'))
 
     def _iterate_manifest_blocks(self, fh):
         blk = []
@@ -405,9 +443,6 @@ class NinjaManifestParser(object):
         V3(">> eval_edge_attribute('%s': '%s')" % (scope, attribute))
         attribute_val = scope.get(attribute, "")
         return self._unescape(self._eval_attribute(scope, attribute_val))
-
-    def iterate_target_rules(self):
-        return iter(self.edges)
 
 class Edge(object):
     def __init__(self, provides, requires, is_phony):
@@ -765,9 +800,13 @@ if __name__ == '__main__':
     info("Parsing Trace log..")
     trace_parser = TraceParser(file(args.tracefile, "r"))
 
+    # If 'default' was specified in nija manifest, use it if no targets
+    #  were selected in command line.
+    wanted = args.targets or ninja_parser.get_default_targets()
+
     ### Build graphs
-    ninja_clean_build_graph = create_graph(args.manifest, ninja_parser, args.targets, clean_build_graph=True)
-    ninja_incremental_graph = create_graph(args.manifest, ninja_parser, args.targets, clean_build_graph=False)
+    ninja_clean_build_graph = create_graph(args.manifest, ninja_parser, wanted, clean_build_graph=True)
+    ninja_incremental_graph = create_graph(args.manifest, ninja_parser, wanted, clean_build_graph=False)
     # Note: for now, always build a complete (e.g., all-targets-wanted) trace-graph
     trace_graph = create_graph(args.tracefile, trace_parser, targets=[])
 

@@ -191,29 +191,6 @@ build ${v1}3: phony
         self.assertItemsEqual(edges, list())
 
     @unittest.skip("Fixme later")
-    def testEscapes(self):
-        manifest = """
-v2 = in
-v3 = g
-
-# Escaping variables
-build $${v1}4: phony $$v2
-  v3 = $$v3
-"""
-        parser = NinjaManifestParserIOHooked(manifest.splitlines())
-        edges = list(parser.iterate_target_rules())
-
-        # Fix needed!
-        e = edges.pop(0)
-        self.assertItemsEqual(e.targets,["${v1}4"])
-        self.assertEqual(parser._eval_edge_attribute(e, "in"), "$v2")
-        self.assertEqual(parser._eval_edge_attribute(e, "v1"), "out")
-        self.assertEqual(parser._eval_edge_attribute(e, "v2"), "in")
-        self.assertEqual(parser._eval_edge_attribute(e, "v3"), "$v3")
-
-        self.assertItemsEqual(edges, list())
-
-    @unittest.skip("Fixme later")
     def testManifestRecursiveAttrs(self):
         manifest = """
 # Recursive attribute redefinition
@@ -275,6 +252,91 @@ build out3: RULE
         self.assertItemsEqual(e.order_only_deps, [])
 
         self.assertItemsEqual(edges, list())
+
+class NinjaManifestParserEscapesTests(unittest.TestCase):
+    @unittest.skip("Fixme later")
+    def testEscapeUSD(self):
+        manifest = """
+v2 = in
+v3 = g
+
+# Escaping variables
+build $${v1}4: phony $$v2
+  v3 = $$v3
+
+# Escaping long lines
+build out: phony $
+  in1 $
+  in2
+"""
+        parser = NinjaManifestParserIOHooked(manifest.splitlines(True))
+        edges = list(parser.iterate_target_rules())
+
+        # Fix needed!
+        e = edges.pop(0)
+        self.assertItemsEqual(e.targets,["${v1}4"])
+        self.assertEqual(parser._eval_edge_attribute(e, "in"), "$v2")
+        self.assertEqual(parser._eval_edge_attribute(e, "v1"), "out")
+        self.assertEqual(parser._eval_edge_attribute(e, "v2"), "in")
+        self.assertEqual(parser._eval_edge_attribute(e, "v3"), "$v3")
+
+        self.assertItemsEqual(edges, list())
+
+    def testEscapeCR(self):
+        manifest = """
+# Splitting long lines
+build out: phony $
+  in1            $
+  in2
+"""
+        parser = NinjaManifestParserIOHooked(manifest.splitlines(True))
+        edges = list(parser.iterate_target_rules())
+
+        e = edges.pop(0)
+        self.assertItemsEqual(e.targets,["out"])
+        self.assertItemsEqual(e.deps, ["in1", "in2"])
+        self.assertItemsEqual(e.order_only_deps, [])
+        self.assertEqual(e.rule_name, "phony")
+        self.assertEqual(parser._eval_edge_attribute(e, "in"), "in1 in2")
+        self.assertItemsEqual(edges, list())
+
+#TODO: rename edges to 'build rules'
+class NinjaManifestKeywords(unittest.TestCase):
+    def setUp(self):
+        manifest = """
+ninja_required_version = 1.2
+
+pool mypool
+  depth = 2
+
+rule RULE
+  command = cc $in -o $out
+  pool = otherpool
+
+build out1: RULE in1
+  pool = mypool
+
+default out1 out$ 3 $
+  out-4
+"""
+        self.parser = NinjaManifestParserIOHooked(manifest.splitlines(True))
+        self.edges = list(self.parser.iterate_target_rules())
+
+    def testPoolParse(self):
+        e = self.edges.pop(0)
+        self.assertItemsEqual(e.targets,["out1"])
+        self.assertItemsEqual(e.deps, ["in1"])
+        self.assertEqual(e.rule_name, "RULE")
+
+        # Treating pool selection like a regular attribute.
+        self.assertEqual(self.parser._eval_edge_attribute(e, "pool"), "mypool")
+
+    def testDefaultParse(self):
+        self.assertItemsEqual(self.parser.get_default_targets(),
+                              ['out1', 'out 3', 'out-4'])
+
+    def testNinjaRequiredVersion(self):
+        self.assertAlmostEqual(self.parser.ninja_required_version, 1.2)
 
 class DepfilesParsingTests(unittest.TestCase):
     def testDepfilesTypicalParse(self):
