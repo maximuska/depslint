@@ -32,11 +32,36 @@ Verify build manifest for:
 Quick usage guide
 =================
 cd ~/myproject
+ninja -t clean
 git clean -fdX
 
+# You can substitute the above with a suitable command cleaning your
+# build tree.
+
 ~/depslint/depstrace.py ninja
-~/depslint/depslint.py
+
+# The above will build your project under 'strace', parse output and
+# store discovered dependency information in 'deps.lst'. The complete
+# strace output will also be stored in 'strace_log.txt' for debugging,
+# if necessary.
+
+~/depslint/depslint.py --stats=all
+
+# Parse build.ninja, load depfiles, build dependency graph and
+# validate it using 'real' dependency information in 'deps.lst'. If
+# '.depslint' file is available, it can be used to set
+# 'IGNORED_SUFFICES' and 'IMPLICIT_DEPS_MATCHERS' to ignore certain
+# dependecy issues. Tool output with extra details is stored to
+# 'depslint.log'.
 
 Documentation
 =============
 The documentation will eventually appear under doc/.
+
+Hacking & Testing
+=================
+
+There are unit-tests available under 'tests' directory. You can run
+these as: 'python -m unittest tests' under project root. If you wish
+to contribute changes, it would be best if you will add supporting
+tests as well.
