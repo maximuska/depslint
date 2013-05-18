@@ -62,12 +62,12 @@ def info(msg):
     print "\033[1;32mINFO: %s\033[0m" % msg
 
 class TracedRule(object):
-    def __init__(self, pid, lineno):
+    def __init__(self, lineno):
         self.deps = set()
         self.outputs = set()
 
         # Debug info
-        self.pid = pid
+        self.pids = set()
         self.lineno = lineno
 
     def add_dep(self, path):
@@ -75,6 +75,9 @@ class TracedRule(object):
 
     def add_output(self, path):
         self.outputs.add(path)
+
+    def add_pid(self, pid):
+        self.pids.add(pid)
 
     def get_deps_filtered(self):
         # Complex scripts may create intermediate outputs and then
@@ -111,7 +114,8 @@ class DepsTracer(object):
         self.working_dirs = dict() # pid -> cwd
 
     def createRule(self, pid):
-        r = TracedRule(pid, self.cur_lineno)
+        r = TracedRule(self.cur_lineno)
+        r.add_pid(pid)
         self.traced_rules.append(r)
         self.pid2rule[pid] = r
         return r
@@ -221,7 +225,9 @@ class DepsTracer(object):
                     V2("Creating a build rule record for pid %s, line %d in strace log" % (new_pid, self.cur_lineno))
                     self.createRule(new_pid)
                 else:
-                    self.pid2rule[new_pid] = self.pid2rule.get(pid)
+                    rul = self.pid2rule.get(pid)
+                    rul.add_pid(new_pid)
+                    self.pid2rule[new_pid] = rul
             elif op == 'chdir':
                 new_cwd = os.path.join(cwd, arg1)
                 self.working_dirs[pid] = new_cwd
@@ -292,7 +298,8 @@ def process_results(options, rules, unmatched_lines):
         for rule in rules:
             deps = sorted(rule.get_deps_filtered())
             outputs = sorted(rule.get_outputs_filtered())
-            f.write("{'OUT': %r, 'IN': %r, 'LINE': %d, 'PID': %r}\n" % (outputs, deps, rule.lineno, rule.pid))
+            f.write("{'OUT': %r, 'IN': %r, 'LINE': %d, 'PID': %r}\n" % (
+                outputs, deps, rule.lineno, "|".join(rule.pids)))
     info("Done")
 
 def tracecmd(options, args):

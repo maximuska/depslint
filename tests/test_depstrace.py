@@ -114,13 +114,13 @@ class DepsTraceTests(unittest.TestCase):
         r = rules.pop(0)
         self.assertItemsEqual(r.deps, ['tst.c', 'tst.h'])
         self.assertItemsEqual(r.outputs, ['tst2', 'tst2.d'])
-        self.assertEqual(r.pid, '5085')
+        self.assertItemsEqual(r.pids, ['5085'])
         self.assertEqual(r.lineno, 4)
 
         r = rules.pop(0)
         self.assertItemsEqual(r.deps, ['tst.c', 'tst.h', 'gcc'])
         self.assertItemsEqual(r.outputs, ['tst', 'tst.d'])
-        self.assertEqual(r.pid, '5086')
+        self.assertItemsEqual(r.pids, ['5086'])
         self.assertEqual(r.lineno, 5)
 
         self.assertItemsEqual(tracer.unmatched_lines, [])
@@ -139,10 +139,11 @@ class DepsTraceTests(unittest.TestCase):
         r = rules.pop(0)
         self.assertItemsEqual(r.deps, ['tst.sh'])
         self.assertItemsEqual(r.outputs, ['tst'])
-        self.assertEqual(r.pid, '5085')
+        self.assertItemsEqual(r.pids, ['5085'])
         self.assertEqual(r.lineno, 2)
 
         self.assertItemsEqual(tracer.unmatched_lines, ['5085  unmatchedop("tst.c") = 5'])
 
     def testDepStraceTrackChdir(self):
+        #TODO
         tracefile = """"""
