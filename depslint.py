@@ -769,7 +769,7 @@ if __name__ == '__main__':
     parser.add_argument('--conf', help='load custom configuration from CONF')
     parser.add_argument('--stats', choices=['all'], help='Evaluate and print build tree statitics')
     parser.add_argument('-v', dest='verbose', action='count', default=0, help='increase verbosity level')
-    parser.add_argument('--version', action='version', version='%(prog)s: v0.1')
+    parser.add_argument('--version', action='version', version='%(prog)s: git')
     parser.add_argument('targets', nargs='*', help='specify targets to verify, as passed to ninja when traced')
     args = parser.parse_args()
 

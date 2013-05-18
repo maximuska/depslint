@@ -318,7 +318,7 @@ def parse_tracefile(args):
 
 if __name__ == '__main__':
     parser = optparse.OptionParser(prog='depstrace',
-                                   version='%prog: v0.1',
+                                   version='%prog: git',
                                    usage="usage: %prog [options] -- [command [arg ...]]")
     parser.add_option('-o', '--outfile', default=_DEFAULT_OUTFILE,
                       help="store output to the specified file [default: %default]")
