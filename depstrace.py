@@ -39,6 +39,10 @@ _OPS = '%s|%s|%s' % (_FILEOPS, _PROCOPS, _UNUSED)
 global _verbose
 _verbose = 0
 
+def V0(*strings):
+    if _verbose >= 0:
+        print " ".join(strings)
+
 def V1(*strings):
     if _verbose >= 1:
         print " ".join(strings)
@@ -50,6 +54,14 @@ def V2(*strings):
 def V3(*strings):
     if _verbose >= 3:
         print " ".join(strings)
+
+def fatal(msg, ret=-1):
+    if _verbose < 0:
+        return
+    sys.stdout.flush()
+    msg = "FATAL: %s" % msg
+    print >>sys.stderr, "\033[1;41m%s\033[0m" % msg
+    sys.exit(ret)
 
 def warn(msg):
     if _verbose < 0:
@@ -103,7 +115,7 @@ class DepsTracer(object):
     _unfinished_re = re.compile(r'(?P<body>(?P<pid>\d+).*)\s+<unfinished \.\.\.>$')
     _resumed_re   = re.compile(r'(?P<pid>\d+)\s+<\.\.\. \S+ resumed> (?P<body>.*)')
 
-    def __init__(self, build_dir=None):
+    def __init__(self, build_dir=None, strict=False):
         self._test_strace_version()
         self.build_dir = os.path.abspath(build_dir or os.getcwd())
         self.logfile = None
@@ -112,6 +124,7 @@ class DepsTracer(object):
         self.cur_lineno = 0
         self.pid2rule = dict()     # pid -> TracedRule (many to one is allowed)
         self.working_dirs = dict() # pid -> cwd
+        self.strict = False
 
     def createRule(self, pid):
         r = TracedRule(self.cur_lineno)
@@ -153,6 +166,7 @@ class DepsTracer(object):
     def _test_strace_version(self):
         try:
             subprocess.check_call(['strace', '-o/dev/null','-etrace=file,process', 'true'])
+            #TODO: actually test strace version...
         except subprocess.CalledProcessError:
             print >>sys.stderr, "strace is missing or incompatible"
             sys.exit(-1)
@@ -255,6 +269,15 @@ class DepsTracer(object):
 
         return self.traced_rules
 
+    def _on_parsing_error(self, msg, line=None):
+        line = line or self.cur_line
+        warn("Strace output parsing error: %r" % msg)
+        V0("........ %r @line: %d)" % (line, self.cur_lineno))
+        if self.strict:
+            fatal("terminating due to a parsing error in strict mode")
+        V0("........ (tracer output may be incomplete)")
+        self.unmatched_lines.append(line.strip())
+
     def _strace_log_iter(self, strace_log):
         interrupted_syscalls = {} # pid -> interrupted syscall log beginning
         for self.cur_lineno, line in enumerate(strace_log, start=1):
@@ -266,18 +289,24 @@ class DepsTracer(object):
             match = self._unfinished_re.match(line)
             if match:
                 pid, body = match.group('pid'), match.group('body')
+                if pid in interrupted_syscalls:
+                    self._on_parsing_error("unexpected unfinished syscall")
+                    # Replacing the previous 'unfinished'
                 interrupted_syscalls[pid] = body
                 continue
             match = self._resumed_re.match(line)
             if match:
                 pid, body = match.group('pid'), match.group('body')
+                if pid not in interrupted_syscalls:
+                    self._on_parsing_error("unexpected resumed syscall")
+                    continue
                 line = interrupted_syscalls[pid] + body
                 del interrupted_syscalls[pid]
 
             # Parse syscall line
             fop = self._file_re.match(line)
             if not fop:
-                self.unmatched_lines.append(line.strip())
+                self._on_parsing_error("unmatched strace output line", line)
                 continue
 
             pid, op, ret = fop.group('pid'), fop.group('op'), fop.group('ret')
@@ -286,11 +315,23 @@ class DepsTracer(object):
             arg2 = arg2.strip('"') if arg2 else arg2
             V2("pid=%s, op='%s', arg1=%s, arg2=%s, ret=%s" % (pid, op, arg1, arg2, ret))
             yield (pid, op, ret, arg1, arg2)
+        if interrupted_syscalls:
+            warn("excessive interrupted syscall(s) at the end of trace:")
+            for k, v in interrupted_syscalls.iteritems():
+                V0("........ %s: %r" % (k, v))
+            if self.strict:
+                fatal("terminating due to a parsing error in strict mode")
+            V0("(probably strace bugs, consider upgrading 'strace')")
+            V0("(tracer output may be incomplete)")
+
 
 def process_results(options, rules, unmatched_lines):
-    # Display unmatched lines.. (e.g., fixme's)
-    for l in unmatched_lines:
-        warn("Unmatched: '%s'" % l)
+    # Display unmatched lines..
+    if unmatched_lines:
+        warn("Summary of all unmatched lines:")
+        V0("........ (probably strace bugs, consider upgrading 'strace')")
+        for l in unmatched_lines:
+            V0("........ unmatched: %r" % l)
 
     # Log results
     info("Detected %d build rules in total, writing log: %s" % (len(rules), options.outfile))
@@ -303,7 +344,7 @@ def process_results(options, rules, unmatched_lines):
     info("Done")
 
 def tracecmd(options, args):
-    tracer = DepsTracer()
+    tracer = DepsTracer(strict=options.strict)
 
     # Build & trace
     status, rules = tracer.trace(cmd=args)
@@ -315,11 +356,11 @@ def tracecmd(options, args):
     process_results(options, rules, tracer.unmatched_lines)
     return 0
 
-def parse_tracefile(args):
-    tracer = DepsTracer()
+def parse_tracefile(options):
+    tracer = DepsTracer(strict=options.strict)
 
     # Process pre-recorded tracefile
-    rules = tracer.parse_trace(file(args.from_tracefile, "r"))
+    rules = tracer.parse_trace(file(options.from_tracefile, "r"))
     process_results(options, rules, tracer.unmatched_lines)
     return 0
 
@@ -333,6 +374,8 @@ if __name__ == '__main__':
                       help="parse pre-recorded strace output"
                       " instead of tracing the command")
     parser.add_option('-v', '--verbose', action='count', default=0)
+    parser.add_option('--strict', action='store_true', default=False,
+                      help="Don't tolerate parsing errors when tracing")
     (options, args) = parser.parse_args()
 
     # Global verbosity settings

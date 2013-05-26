@@ -17,6 +17,9 @@
 import unittest
 import depstrace
 
+# Silence all output
+depstrace._verbose = -1
+
 class DepsTraceTests(unittest.TestCase):
     def testDepStraceLogIterator(self):
         tracefile = """5082  execve("/bin/ninja", [...], [/* 45 vars */]) = 0
@@ -40,7 +43,7 @@ class DepsTraceTests(unittest.TestCase):
 5085  exit_group(0) = ?
 """
         tracer = depstrace.DepsTracer()
-        tokens = list(tracer._strace_log_iter(tracefile.splitlines()))
+        tokens = list(tracer._strace_log_iter(tracefile.splitlines(True)))
         self.assertItemsEqual(tracer.unmatched_lines, [])
 
         # execve
@@ -108,7 +111,7 @@ class DepsTraceTests(unittest.TestCase):
 5085  open("tst2", O_RDWR|O_LARGEFILE) = 13
 """
         tracer = depstrace.DepsTracer(None)
-        rules = tracer.parse_trace(tracefile.splitlines())
+        rules = tracer.parse_trace(tracefile.splitlines(True))
         self.assertEqual(2, len(rules))
 
         r = rules.pop(0)
@@ -133,7 +136,7 @@ class DepsTraceTests(unittest.TestCase):
 5085  unmatchedop("tst.c") = 5
 """
         tracer = depstrace.DepsTracer()
-        rules = tracer.parse_trace(tracefile.splitlines())
+        rules = tracer.parse_trace(tracefile.splitlines(True))
         self.assertEqual(1, len(rules))
 
         r = rules.pop(0)
@@ -143,6 +146,68 @@ class DepsTraceTests(unittest.TestCase):
         self.assertEqual(r.lineno, 2)
 
         self.assertItemsEqual(tracer.unmatched_lines, ['5085  unmatchedop("tst.c") = 5'])
+
+    def testDepStraceDoubleResumedBug(self):
+        tracefile = """5082  execve("/home/maximk/programs/bin/ninja", [...], [/* 45 vars */]) = 0
+5082  clone(child_stack=0, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0xb77c8768) = 21316
+21316 execve("/usr/lib/gcc/x86_64-linux-gnu/4.4.3/cc1plus", [...], [/* 63 vars */] <unfinished ...>
+21316 <... execve resumed> ) = 0
+21316 open("../../wtf/Assertions.h", O_RDONLY|O_NOCTTY <unfinished ...>
+21316 <... open resumed> ) = 4
+21316 <... open resumed> ) = 0
+"""
+        tracer = depstrace.DepsTracer(build_dir="/xxx/yyy")
+        rules = tracer.parse_trace(tracefile.splitlines(True))
+        self.assertEqual(1, len(rules))
+
+        r = rules.pop(0)
+        self.assertItemsEqual(r.deps, ['../../wtf/Assertions.h'])
+        self.assertItemsEqual(r.outputs, [])
+        self.assertItemsEqual(r.pids, ['21316'])
+        self.assertEqual(r.lineno, 2)
+
+        self.assertItemsEqual(tracer.unmatched_lines, ['21316 <... open resumed> ) = 0'])
+
+    def testDepStraceDoubleUnfinishedBug(self):
+        tracefile = """5082  execve("/home/maximk/programs/bin/ninja", [...], [/* 45 vars */]) = 0
+5082  clone(child_stack=0, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0xb77c8768) = 21316
+21316 execve("/usr/lib/gcc/x86_64-linux-gnu/4.4.3/cc1plus", [...], [/* 63 vars */] <unfinished ...>
+21316 <... execve resumed> ) = 0
+21316 open("../../wtf/Assertions.h", O_RDONLY|O_NOCTTY <unfinished ...>
+21316 open("Unexpected.h", O_RDONLY|O_NOCTTY <unfinished ...>
+21316 <... open resumed> ) = 4
+"""
+        tracer = depstrace.DepsTracer(build_dir="/xxx/yyy")
+        rules = tracer.parse_trace(tracefile.splitlines(True))
+        self.assertEqual(1, len(rules))
+
+        r = rules.pop(0)
+        self.assertIn(r.deps.pop(), ['Unexpected.h', '../../wtf/Assertions.h'])
+        self.assertItemsEqual(r.outputs, [])
+        self.assertItemsEqual(r.pids, ['21316'])
+        self.assertEqual(r.lineno, 2)
+
+        self.assertItemsEqual(tracer.unmatched_lines, ['21316 open("Unexpected.h", O_RDONLY|O_NOCTTY <unfinished ...>'])
+
+    def testDepStraceExcessiveUnfinishedBug(self):
+        #TODO
+        tracefile = """5082  execve("/home/maximk/programs/bin/ninja", [...], [/* 45 vars */]) = 0
+5082  clone(child_stack=0, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0xb77c8768) = 21316
+21316 execve("/usr/lib/gcc/x86_64-linux-gnu/4.4.3/cc1plus", [...], [/* 63 vars */] <unfinished ...>
+21316 <... execve resumed> ) = 0
+21316 open("../../wtf/Assertions.h", O_RDONLY|O_NOCTTY <unfinished ...>
+"""
+        tracer = depstrace.DepsTracer(build_dir="/xxx/yyy")
+        rules = tracer.parse_trace(tracefile.splitlines(True))
+        self.assertEqual(1, len(rules))
+
+        r = rules.pop(0)
+        self.assertItemsEqual(r.deps, [])
+        self.assertItemsEqual(r.outputs, [])
+        self.assertItemsEqual(r.pids, ['21316'])
+        self.assertEqual(r.lineno, 2)
+
+        self.assertItemsEqual(tracer.unmatched_lines, ['21316 open("../../wtf/Assertions.h", O_RDONLY|O_NOCTTY <unfinished ...>'])
 
     def testDepStraceTrackChdir(self):
         #TODO
