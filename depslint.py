@@ -60,7 +60,8 @@ def log_msg(level, msg, trunc_lines=True, ansi=None, fd=sys.stdout):
         return
 
     if _verbose >= level:
-        _logfile.write("[%s] %s\n" % (time.asctime(), msg))
+        if _logfile:
+            _logfile.write("[%s] %s\n" % (time.asctime(), msg))
 
         if trunc_lines and len(msg) > 140:
             msg = msg[:137] + "..."
@@ -72,7 +73,7 @@ def log_msg(level, msg, trunc_lines=True, ansi=None, fd=sys.stdout):
         return
 
     # Always log levels 0 and 1
-    if level in (0, 1):
+    if level in (0, 1) and _logfile:
         _logfile.write("[%s] %s\n" % (time.asctime(), msg))
 
 def H0():
@@ -337,7 +338,7 @@ class NinjaManifestParser(object):
                     depfile_deps=[],
                     order_only_deps=order,
                     rule_name=rule)
-        V2("** BuildRule** ", str(edge))
+        V2("** BuildRule %r ** " % str(edge))
         self.edges.append(edge)
         self.edges_attributes[edge] = edge_attrs
 
@@ -349,6 +350,7 @@ class NinjaManifestParser(object):
         rule = match.group('rule')
         attributes = dict(self._parse_attributes(blk[1:]))
         self.rules[rule] = dict(attributes=attributes)
+        V2("** Rule %r **" % str(rule))
 
     _attr_re = re.compile(r'\s*(?P<k>\w+)\s*=\s*(?P<v>.*?)\s*$') # key = val
     def _parse_attributes(self, blk):
