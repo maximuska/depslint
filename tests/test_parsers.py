@@ -25,6 +25,14 @@ class NinjaManifestParserIOHooked(depslint.NinjaManifestParser):
         self.files = files_dict
         super(NinjaManifestParserIOHooked, self).__init__(manifest)
 
+    def _open_submanifest(self, path):
+        try:
+            val = self.files[path]
+        except KeyError:
+            #raise IOError(2, "No such file or directory: %r" % path)
+            raise Exception("No such file or directory: %r" % path)
+        return val.splitlines(True)
+
     def _read_depfile(self, path):
         return self.files.get(path)
 
@@ -337,6 +345,59 @@ default out1 out$ 3 $
 
     def testNinjaRequiredVersion(self):
         self.assertAlmostEqual(self.parser.ninja_required_version, 1.2)
+
+class NinjaManifestParserSubninja(unittest.TestCase):
+    files = ({"subninja.ninja" : """
+v = 2
+flags = clutter
+build $root/v$v: RULE in2
+"""})
+
+    manifest = """
+root = outdir
+subninja_file = subninja.ninja
+v = 1
+flags = -I.
+
+rule RULE
+  command = cc $in -o $out $flags
+
+subninja $subninja_file
+
+build $root/v$v: RULE in1
+        """
+    def setUp(self):
+        self.parser = NinjaManifestParserIOHooked(self.manifest.splitlines(True),
+                                                  self.files)
+        self.edges = list(self.parser.iterate_target_rules())
+
+    def testSubninja(self):
+        edges = self.edges[:]
+        e = edges.pop(0)
+        self.assertItemsEqual(e.targets,["outdir/v2"])
+        self.assertItemsEqual(e.deps, ["in2"])
+        self.assertItemsEqual(e.order_only_deps, [])
+        self.assertEqual(e.rule_name, "RULE")
+
+        e = edges.pop(0)
+        self.assertItemsEqual(e.targets,["outdir/v1"])
+        self.assertItemsEqual(e.deps, ["in1"])
+        self.assertItemsEqual(e.order_only_deps, [])
+        self.assertEqual(e.rule_name, "RULE")
+        self.assertEqual(self.parser._eval_edge_attribute(e, "command"),
+                         "cc in1 -o outdir/v1 -I.")
+
+        self.assertItemsEqual(edges, list())
+
+    def testSubninjaEval(self):
+        #TBD: I am not sure this is the righ behavior. Checkme..
+        edges = self.edges[:]
+        e = edges.pop(0)
+        self.assertEqual(self.parser._eval_edge_attribute(e, "command"),
+                         "cc in2 -o outdir/v2 -I.")
+        e = edges.pop(0)
+        self.assertEqual(self.parser._eval_edge_attribute(e, "command"),
+                         "cc in1 -o outdir/v1 -I.")
 
 class DepfilesParsingTests(unittest.TestCase):
     def testDepfilesTypicalParse(self):

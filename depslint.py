@@ -195,18 +195,32 @@ class TraceParser(object):
         return self._iterate_target_rules(self.input)
 
 class NinjaManifestParser(object):
-    def __init__(self, input):
+    def __init__(self, input, parent=None, new_scope=False):
         self.input = input
         self.lineno = 0
+        self.parent = parent
 
-        self.global_attributes = dict()
-        self.edges_attributes = dict()
-        self.edges = list()
-        self.default_targets = []
-        self.ninja_required_version = 0.0
+        # Support 'include' and 'subninja' by allowing manifest parser
+        # inheriting parent attributes.
+        if parent:
+            if new_scope:
+                self.global_attributes = dict(parent.global_attributes)
+            else:
+                self.global_attributes = parent.global_attributes
+            self.edges_attributes = parent.edges_attributes
+            self.edges = parent.edges
+            self.default_targets = parent.default_targets
+            self.ninja_required_version = parent.ninja_required_version
+            self.rules = parent.rules
+        else:
+            self.global_attributes = dict()
+            self.edges_attributes = dict()
+            self.edges = list()
+            self.default_targets = []
+            self.ninja_required_version = 0.0
 
-        # Initializing rules list with a 'phony' rule
-        self.rules = dict(phony=dict(attributes=[]))
+            # Initializing rules list with a 'phony' rule
+            self.rules = dict(phony=dict(attributes=[]))
 
         self._parse()
         # FIXME: should do this 'per tested target tree' / or on
@@ -235,6 +249,9 @@ class NinjaManifestParser(object):
                 self._handle_subninja(blk)
             else:
                 self._handle_globals(blk)
+
+    def _open_submanifest(self, path):
+        return file(path, "r")
 
     def _read_depfile(self, path):
         if not os.path.isfile(path):
@@ -292,8 +309,14 @@ class NinjaManifestParser(object):
     def _handle_include(self, blk):
         fatal("'include' keyword support not implemented, wanna help?")
 
-    def _handle_subninja(blk):
-        fatal("'subninja' keyword support not implemented, wanna help?")
+    def _handle_subninja(self, blk):
+        subninja_str = blk[0][len('subninja '):]
+        subpath = self._unescape_and_eval(subninja_str, self.global_attributes)
+        try:
+            input = self._open_submanifest(subpath)
+        except IOError, e:
+            fatal("Error opening sub-manifest file %r at line %d" % (subpath, self.lineno-len(blk)))
+        NinjaManifestParser(input, self, new_scope=True)
 
     def _check_required_version(self, attrs):
         if self.ninja_required_version:
@@ -419,6 +442,11 @@ class NinjaManifestParser(object):
 
     def _get_edge_attrs(self, edge):
         return self.edges_attributes[edge]
+
+    def _unescape_and_eval(self, s, scope):
+        t = self._eval_attribute(scope, self._unescape(s))
+        V3(">> _unescape_and_eval('%s') -> '%s'" % (s, t))
+        return t
 
     def _split_unescape_and_eval(self, s, scope):
         lst = [self._eval_attribute(scope, x) for x in self._split_and_unescape(s)]
